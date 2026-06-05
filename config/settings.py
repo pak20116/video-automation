@@ -33,3 +33,9 @@ SUBTITLE_FONT_SIZE = int(os.getenv("SUBTITLE_FONT_SIZE", "48"))
 
 IMAGE_STYLE = os.getenv("IMAGE_STYLE", "photorealistic, cinematic lighting")
 CHARACTER_DESCRIPTION = os.getenv("CHARACTER_DESCRIPTION", "")
+
+# Video generation mode: "image" (default) or "video" (Veo)
+VIDEO_GENERATION_MODE = os.getenv("VIDEO_GENERATION_MODE", "image")
+GEMINI_VIDEO_MODEL = os.getenv("GEMINI_VIDEO_MODEL", "veo-2.0-generate-001")
+VEO_CLIP_DURATION = int(os.getenv("VEO_CLIP_DURATION", "5"))  # 5 or 8 seconds
+CLIPS_DIR = OUTPUT_DIR / "clips"

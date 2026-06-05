@@ -7,6 +7,7 @@ class ScriptSegment(BaseModel):
     text: str
     image_prompt: Optional[str] = None
     image_path: Optional[str] = None
+    video_clip_path: Optional[str] = None
     audio_start_ms: Optional[int] = None
     audio_end_ms: Optional[int] = None
     duration_ms: Optional[int] = None

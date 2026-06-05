@@ -1,4 +1,5 @@
 import logging
+from config.settings import VIDEO_GENERATION_MODE
 from models.data_models import PipelineState
 from utils.file_helpers import ensure_output_dirs, save_pipeline_state, load_pipeline_state
 from pipeline.step1_script_loader import load_script
@@ -7,18 +8,26 @@ from pipeline.step3_prompt_generator import generate_image_prompts
 from pipeline.step4_image_generator import generate_images
 from pipeline.step5_tts_generator import generate_tts
 from pipeline.step6_subtitle_generator import generate_subtitles
-from pipeline.step7_video_renderer import render_video
+from pipeline.step7_video_renderer import render_video_auto
 
 logger = logging.getLogger(__name__)
 
-_STEPS = [
-    (2, "Script Splitting",      split_script),
-    (3, "Image Prompt Gen",      generate_image_prompts),
-    (4, "Image Generation",      generate_images),
-    (5, "TTS Generation",        generate_tts),
-    (6, "Subtitle Generation",   generate_subtitles),
-    (7, "Video Rendering",       render_video),
-]
+
+def _build_steps() -> list:
+    if VIDEO_GENERATION_MODE == "video":
+        from pipeline.step4_video_clip_generator import generate_video_clips
+        step4 = (4, "Video Clip Gen (Veo)", generate_video_clips)
+    else:
+        step4 = (4, "Image Generation", generate_images)
+
+    return [
+        (2, "Script Splitting",    split_script),
+        (3, "Image Prompt Gen",    generate_image_prompts),
+        step4,
+        (5, "TTS Generation",      generate_tts),
+        (6, "Subtitle Generation", generate_subtitles),
+        (7, "Video Rendering",     render_video_auto),
+    ]
 
 
 def run_pipeline(script_path: str, start_step: int = 1) -> PipelineState:
@@ -48,6 +57,7 @@ def run_pipeline(script_path: str, start_step: int = 1) -> PipelineState:
         state = load_script(script_path)
         save_pipeline_state(state.model_dump())
 
+    _STEPS = _build_steps()
     for step_num, step_name, step_fn in _STEPS:
         if step_num < start_step:
             logger.info(f"[Step {step_num}/7] {step_name} — SKIPPED")

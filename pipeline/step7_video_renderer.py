@@ -4,6 +4,8 @@ from pathlib import Path
 from config.settings import (
     FFMPEG_PATH,
     OUTPUT_DIR,
+    VIDEO_WIDTH,
+    VIDEO_HEIGHT,
     VIDEO_FPS,
     SUBTITLE_FONT_SIZE,
 )
@@ -121,3 +123,123 @@ def render_video(state: PipelineState) -> PipelineState:
     state.output_video_path = str(output_path)
     logger.info(f"  Video rendered: {output_path.name}")
     return state
+
+
+# ── Clip-based renderer (Veo mode) ────────────────────────────────────
+
+def _run_ffmpeg(cmd: list[str], label: str) -> None:
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"FFmpeg [{label}] failed (exit {result.returncode}):\n"
+            f"{result.stderr[-3000:]}"
+        )
+
+
+def _segment_duration_s(state: PipelineState, index: int) -> float:
+    segments = state.segments
+    total_ms = state.total_audio_duration_ms or 0
+    seg = segments[index]
+    end_ms = segments[index + 1].audio_start_ms if index + 1 < len(segments) else total_ms
+    return max((end_ms - (seg.audio_start_ms or 0)) / 1000.0, 0.5)
+
+
+def _concatenate_clips(state: PipelineState, output_path: Path) -> None:
+    """Build a silent video track by stitching Veo clips to exact segment durations."""
+    segments = state.segments
+    scale = (
+        f"scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:force_original_aspect_ratio=decrease,"
+        f"pad={VIDEO_WIDTH}:{VIDEO_HEIGHT}:(ow-iw)/2:(oh-ih)/2,"
+        f"fps={VIDEO_FPS},format=yuv420p"
+    )
+
+    inputs: list[str] = []
+    filter_parts: list[str] = []
+    labels: list[str] = []
+
+    for i, seg in enumerate(segments):
+        dur = _segment_duration_s(state, i)
+        # -stream_loop -1 loops the clip so trim always has enough frames
+        inputs += ["-stream_loop", "-1", "-i", seg.video_clip_path]
+        filter_parts.append(
+            f"[{i}:v]trim=0:{dur:.3f},setpts=PTS-STARTPTS,{scale}[v{i}]"
+        )
+        labels.append(f"[v{i}]")
+
+    n = len(segments)
+    filter_parts.append(f"{''.join(labels)}concat=n={n}:v=1:a=0[vout]")
+
+    # Write filter_complex to a temp file (avoids Windows cmd-line length limit)
+    fc_path = OUTPUT_DIR / "filter_complex.txt"
+    fc_path.write_text(";".join(filter_parts), encoding="utf-8")
+
+    cmd = (
+        [FFMPEG_PATH, "-y"]
+        + inputs
+        + [
+            "-filter_complex_script", str(fc_path),
+            "-map", "[vout]",
+            "-c:v", "libx264",
+            "-preset", "medium",
+            "-crf", "23",
+            "-r", str(VIDEO_FPS),
+            str(output_path),
+        ]
+    )
+    logger.info("  FFmpeg: 클립 이어붙이기...")
+    _run_ffmpeg(cmd, "clip-concat")
+    fc_path.unlink(missing_ok=True)
+
+
+def _add_audio_subtitles(
+    video_path: Path,
+    audio_path: str,
+    subtitle_path: str,
+    output_path: Path,
+) -> None:
+    """Second pass: mux audio and burn subtitles onto the concatenated clip video."""
+    sub_escaped = _escape_subtitle_path(subtitle_path)
+    cmd = [
+        FFMPEG_PATH, "-y",
+        "-i", str(video_path),
+        "-i", audio_path,
+        "-vf", f"ass='{sub_escaped}'",
+        "-c:v", "libx264",
+        "-preset", "medium",
+        "-crf", "23",
+        "-c:a", "aac",
+        "-b:a", "192k",
+        "-ar", "44100",
+        "-pix_fmt", "yuv420p",
+        "-shortest",
+        str(output_path),
+    ]
+    logger.info("  FFmpeg: 오디오 + 자막 합성...")
+    _run_ffmpeg(cmd, "audio-subs")
+
+
+def render_video_from_clips(state: PipelineState) -> PipelineState:
+    """Compose final MP4 from Veo clips, TTS audio, and subtitles."""
+    output_path = OUTPUT_DIR / "final_video.mp4"
+    temp_path = OUTPUT_DIR / "temp_clips_concat.mp4"
+
+    _concatenate_clips(state, temp_path)
+    _add_audio_subtitles(temp_path, state.audio_path, state.subtitle_path, output_path)
+    temp_path.unlink(missing_ok=True)
+
+    state.output_video_path = str(output_path)
+    logger.info(f"  Video rendered (Veo clips): {output_path.name}")
+    return state
+
+
+def render_video_auto(state: PipelineState) -> PipelineState:
+    """Choose clip-based or image-based rendering depending on what was generated."""
+    if any(s.video_clip_path for s in state.segments):
+        return render_video_from_clips(state)
+    return render_video(state)

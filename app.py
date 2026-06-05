@@ -118,6 +118,35 @@ with st.sidebar:
 
     st.divider()
 
+    # ── Generation mode ──────────────────────────────────────────────
+    st.markdown("**🎬 생성 모드**")
+    _mode_labels = [
+        "🖼️ 이미지 슬라이드쇼  (빠름·안정적)",
+        "🎥 AI 동영상 클립  (Veo, 고품질·느림)",
+    ]
+    _current_mode = os.getenv("VIDEO_GENERATION_MODE", "image")
+    _mode_default = 1 if _current_mode == "video" else 0
+    gen_mode_sel = st.radio(
+        "생성 모드",
+        _mode_labels,
+        index=_mode_default,
+        label_visibility="collapsed",
+    )
+    video_gen_mode = "video" if gen_mode_sel.startswith("🎥") else "image"
+
+    if video_gen_mode == "video":
+        veo_dur = st.select_slider(
+            "클립 길이",
+            options=[5, 8],
+            value=int(os.getenv("VEO_CLIP_DURATION", "5")),
+            format_func=lambda x: f"{x}초",
+            help="장면당 동영상 클립 길이 (장면 수 × 클립 길이 ≈ 총 생성 시간)",
+        )
+    else:
+        veo_dur = 5
+
+    st.divider()
+
     # ── Subtitle ─────────────────────────────────────────────────────
     st.markdown("**💬 자막**")
     subtitle_size = st.slider(
@@ -227,7 +256,11 @@ STEP_NAMES = {
     1: "📄 스크립트 로드",
     2: "✂️  대본 분할 (Gemini)",
     3: "🖊️  이미지 프롬프트 생성 (Gemini)",
-    4: "🖼️  이미지 생성 (Gemini Image)",
+    4: (
+        "🎥  AI 동영상 클립 생성 (Veo)"
+        if video_gen_mode == "video"
+        else "🖼️  이미지 생성 (Gemini Image)"
+    ),
     5: "🎤 TTS 음성 생성 (ElevenLabs)",
     6: "💬 자막 생성",
     7: "🎬 영상 렌더링 (FFmpeg)",
@@ -242,6 +275,8 @@ if run_btn and script_text.strip():
     update_env("SUBTITLE_WORDS_PER_LINE", str(words_per_line))
     update_env("IMAGE_STYLE", art_style)
     update_env("CHARACTER_DESCRIPTION", character_desc)
+    update_env("VIDEO_GENERATION_MODE", video_gen_mode)
+    update_env("VEO_CLIP_DURATION", str(veo_dur))
 
     # ② 대본 저장
     SCRIPTS_DIR.mkdir(exist_ok=True)
@@ -331,11 +366,15 @@ if run_btn and script_text.strip():
 
 # ── Results ───────────────────────────────────────────────────────────
 images = sorted(IMAGES_DIR.glob("segment_*.png")) if IMAGES_DIR.exists() else []
+CLIPS_DIR = OUTPUT_DIR / "clips"
+clips = sorted(CLIPS_DIR.glob("segment_*.mp4")) if CLIPS_DIR.exists() else []
 
-if VIDEO_PATH.exists() or images:
+if VIDEO_PATH.exists() or images or clips:
     st.markdown("### 🎬 결과물")
 
-    tab_img, tab_audio, tab_video, tab_thumb = st.tabs(["🖼️ 생성 이미지", "🔊 TTS 음성", "🎬 최종 영상", "🖼️ 썸네일"])
+    tab_img, tab_clips, tab_audio, tab_video, tab_thumb = st.tabs(
+        ["🖼️ 생성 이미지", "🎥 동영상 클립", "🔊 TTS 음성", "🎬 최종 영상", "🖼️ 썸네일"]
+    )
 
     with tab_img:
         if images:
@@ -345,6 +384,15 @@ if VIDEO_PATH.exists() or images:
                     st.image(str(p), caption=f"Scene {i+1}", use_container_width=True)
         else:
             st.info("생성된 이미지가 없습니다.")
+
+    with tab_clips:
+        if clips:
+            st.caption(f"총 {len(clips)}개 클립 (Veo 생성)")
+            for i, p in enumerate(clips):
+                with st.expander(f"🎥 Clip {i+1} — {p.name}", expanded=(i == 0)):
+                    st.video(str(p))
+        else:
+            st.info("생성된 동영상 클립이 없습니다. 사이드바에서 '🎥 AI 동영상 클립' 모드로 실행하세요.")
 
     with tab_audio:
         if AUDIO_PATH.exists():
