@@ -243,18 +243,7 @@ def _generate_tts_edge(state: PipelineState) -> PipelineState:
 
 
 def generate_tts(state: PipelineState) -> PipelineState:
-    """Route to Edge TTS or ElevenLabs based on TTS_PROVIDER setting.
-    Automatically falls back to Edge TTS if ElevenLabs quota is exceeded."""
+    """Route to Edge TTS or ElevenLabs based on TTS_PROVIDER setting."""
     if TTS_PROVIDER == "edge":
         return _generate_tts_edge(state)
-
-    try:
-        return _generate_tts_elevenlabs(state)
-    except Exception as e:
-        if "quota_exceeded" in str(e):
-            logger.warning(
-                "ElevenLabs quota exceeded — automatically falling back to Edge TTS. "
-                "Switch TTS provider to 'Edge TTS' in the sidebar to skip this retry."
-            )
-            return _generate_tts_edge(state)
-        raise
+    return _generate_tts_elevenlabs(state)
