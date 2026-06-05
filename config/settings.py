@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
@@ -33,6 +33,11 @@ SUBTITLE_FONT_SIZE = int(os.getenv("SUBTITLE_FONT_SIZE", "48"))
 
 IMAGE_STYLE = os.getenv("IMAGE_STYLE", "photorealistic, cinematic lighting")
 CHARACTER_DESCRIPTION = os.getenv("CHARACTER_DESCRIPTION", "")
+CHARACTER_REF_IMAGE_PATH = os.getenv("CHARACTER_REF_IMAGE_PATH", "")
+
+# TTS provider: "elevenlabs" (default) or "edge" (free, no API key)
+TTS_PROVIDER = os.getenv("TTS_PROVIDER", "elevenlabs")
+EDGE_TTS_VOICE = os.getenv("EDGE_TTS_VOICE", "ko-KR-SunHiNeural")
 
 # Video generation mode: "image" (default) or "video" (Veo)
 VIDEO_GENERATION_MODE = os.getenv("VIDEO_GENERATION_MODE", "image")
