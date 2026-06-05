@@ -14,9 +14,11 @@ ENV_FILE = PROJECT_ROOT / ".env"
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 OUTPUT_DIR = PROJECT_ROOT / "output"
 IMAGES_DIR = OUTPUT_DIR / "images"
+CLIPS_DIR = OUTPUT_DIR / "clips"
 AUDIO_PATH = OUTPUT_DIR / "audio" / "full_tts.mp3"
 VIDEO_PATH = OUTPUT_DIR / "final_video.mp4"
 THUMBNAIL_PATH = OUTPUT_DIR / "thumbnail.png"
+CHARACTER_REF_PATH = OUTPUT_DIR / "character_ref.png"
 
 st.set_page_config(
     page_title="Video Automation Pipeline",
@@ -83,25 +85,59 @@ with st.sidebar:
     c1.markdown(f"{'✅' if gemini_key else '❌'} Gemini")
     c2.markdown(f"{'✅' if el_key else '❌'} ElevenLabs")
 
-    if not gemini_key or not el_key:
-        st.error("`.env` 파일에 API 키를 입력해주세요.")
+    _saved_tts = os.getenv("TTS_PROVIDER", "elevenlabs")
+    _need_el_key = _saved_tts != "edge"
+    if not gemini_key or (not el_key and _need_el_key):
+        missing = []
+        if not gemini_key:
+            missing.append("GEMINI_API_KEY")
+        if not el_key and _need_el_key:
+            missing.append("ELEVENLABS_API_KEY")
+        st.error(f"`.env` 파일에 API 키를 입력해주세요: {', '.join(missing)}")
         st.stop()
 
     st.divider()
 
-    # ── Voice ───────────────────────────────────────────────────────
-    st.markdown("**🎤 음성**")
-    voices = fetch_voices(el_key)
-    current_vid = os.getenv("ELEVENLABS_VOICE_ID", "")
+    # ── TTS Provider ─────────────────────────────────────────────────
+    st.markdown("**🎤 음성 (TTS)**")
+    _tts_labels = [
+        "🔑 ElevenLabs  (고품질·유료)",
+        "🆓 Edge TTS  (무료·Microsoft)",
+    ]
+    _tts_default = 1 if _saved_tts == "edge" else 0
+    tts_sel = st.radio("TTS 제공자", _tts_labels, index=_tts_default, label_visibility="collapsed")
+    tts_provider = "edge" if tts_sel.startswith("🆓") else "elevenlabs"
 
-    if voices:
-        labels = [f"[{cat}] {name}" for name, _, cat in voices]
-        ids    = [vid for _, vid, _ in voices]
-        default = ids.index(current_vid) if current_vid in ids else 0
-        chosen_label = st.selectbox("음성 선택", labels, index=default, label_visibility="collapsed")
-        selected_vid = ids[labels.index(chosen_label)]
+    if tts_provider == "elevenlabs":
+        voices = fetch_voices(el_key)
+        current_vid = os.getenv("ELEVENLABS_VOICE_ID", "")
+        if voices:
+            labels = [f"[{cat}] {name}" for name, _, cat in voices]
+            ids    = [vid for _, vid, _ in voices]
+            default = ids.index(current_vid) if current_vid in ids else 0
+            chosen_label = st.selectbox("ElevenLabs 음성", labels, index=default, label_visibility="collapsed")
+            selected_vid = ids[labels.index(chosen_label)]
+        else:
+            selected_vid = st.text_input("Voice ID", value=current_vid)
+        edge_voice = os.getenv("EDGE_TTS_VOICE", "ko-KR-SunHiNeural")
     else:
-        selected_vid = st.text_input("Voice ID", value=current_vid)
+        selected_vid = os.getenv("ELEVENLABS_VOICE_ID", "")
+        _edge_voices = {
+            "🇰🇷 선희 (여성·자연스러움)": "ko-KR-SunHiNeural",
+            "🇰🇷 인준 (남성·따뜻함)":    "ko-KR-InJoonNeural",
+            "🇰🇷 서연 (여성·밝음)":       "ko-KR-SeoyeonNeural",
+            "🇰🇷 지민 (여성·차분함)":     "ko-KR-JiMinNeural",
+            "🇺🇸 Jenny (여성·영어)":      "en-US-JennyNeural",
+            "🇺🇸 Guy (남성·영어)":        "en-US-GuyNeural",
+            "🇺🇸 Aria (여성·영어)":       "en-US-AriaNeural",
+        }
+        _cur_ev = os.getenv("EDGE_TTS_VOICE", "ko-KR-SunHiNeural")
+        _ev_labels = list(_edge_voices.keys())
+        _ev_vals   = list(_edge_voices.values())
+        _ev_default = _ev_vals.index(_cur_ev) if _cur_ev in _ev_vals else 0
+        _ev_chosen = st.selectbox("Edge TTS 음성", _ev_labels, index=_ev_default, label_visibility="collapsed")
+        edge_voice = _edge_voices[_ev_chosen]
+        st.caption("💡 API 키 불필요 · Microsoft Azure Neural TTS 기반")
 
     st.divider()
 
@@ -181,7 +217,11 @@ with st.sidebar:
     )
 
     if start_step <= 4:
-        clear_images = st.checkbox("기존 이미지 삭제 후 재생성", value=(start_step <= 3))
+        _clear_label = (
+            "기존 클립 삭제 후 재생성" if video_gen_mode == "video"
+            else "기존 이미지 삭제 후 재생성"
+        )
+        clear_images = st.checkbox(_clear_label, value=(start_step <= 3))
     else:
         clear_images = False
 
@@ -218,21 +258,52 @@ with col_script:
 with col_style:
     st.markdown("### 🎨 캐릭터 & 스타일")
 
+    # ── Reference character image ────────────────────────────────────
+    st.markdown("**🖼️ 캐릭터 레퍼런스 이미지**")
+    ref_col_upload, ref_col_preview = st.columns([3, 2], gap="small")
+
+    with ref_col_upload:
+        ref_upload = st.file_uploader(
+            "캐릭터 이미지 업로드",
+            type=["png", "jpg", "jpeg", "webp"],
+            label_visibility="collapsed",
+            help="업로드하면 모든 장면에서 이 캐릭터를 그대로 사용합니다.\n비워두면 기본 스틱맨으로 생성됩니다.",
+        )
+        if ref_upload:
+            OUTPUT_DIR.mkdir(exist_ok=True)
+            CHARACTER_REF_PATH.write_bytes(ref_upload.read())
+            update_env("CHARACTER_REF_IMAGE_PATH", str(CHARACTER_REF_PATH))
+            st.success("✅ 레퍼런스 저장됨")
+
+        if CHARACTER_REF_PATH.exists():
+            if st.button("🗑️ 레퍼런스 삭제", key="del_ref"):
+                CHARACTER_REF_PATH.unlink(missing_ok=True)
+                update_env("CHARACTER_REF_IMAGE_PATH", "")
+                st.rerun()
+
+    with ref_col_preview:
+        if CHARACTER_REF_PATH.exists():
+            st.image(str(CHARACTER_REF_PATH), use_container_width=True, caption="현재 레퍼런스")
+        else:
+            st.markdown(
+                "<div style='background:#f0f0f0;border-radius:6px;padding:14px 8px;"
+                "text-align:center;color:#888;font-size:0.8rem;'>기본 스틱맨</div>",
+                unsafe_allow_html=True,
+            )
+
     character_desc = st.text_area(
-        "캐릭터 설명",
-        height=130,
+        "캐릭터 설명 (추가)",
+        height=80,
         placeholder=(
-            "예시:\n"
-            "주인공(남성): 파란 넥타이, 검은 머리 스틱맨\n"
-            "조연(여성): 빨간 드레스, 주황 묶음 머리 스틱맨\n\n"
-            "비워두면 기본 스틱맨 스타일로 생성됩니다."
+            "레퍼런스 이미지가 없을 때 사용됩니다.\n"
+            "예: 주인공(남성): 파란 넥타이, 검은 머리 스틱맨"
         ),
-        help="모든 장면에서 캐릭터 외형을 일관되게 유지합니다.",
+        help="레퍼런스 이미지가 있으면 이미지가 우선 적용됩니다.",
     )
 
     art_style = st.text_area(
         "아트 스타일",
-        height=110,
+        height=80,
         value=os.getenv(
             "IMAGE_STYLE",
             "YouTube educational animation style, simple 2D stick figure characters "
@@ -277,16 +348,22 @@ if run_btn and script_text.strip():
     update_env("CHARACTER_DESCRIPTION", character_desc)
     update_env("VIDEO_GENERATION_MODE", video_gen_mode)
     update_env("VEO_CLIP_DURATION", str(veo_dur))
+    update_env("TTS_PROVIDER", tts_provider)
+    update_env("EDGE_TTS_VOICE", edge_voice)
 
     # ② 대본 저장
     SCRIPTS_DIR.mkdir(exist_ok=True)
     script_file = SCRIPTS_DIR / "_ui_script.txt"
     script_file.write_text(script_text, encoding="utf-8")
 
-    # ③ 기존 이미지 삭제 (옵션)
-    if clear_images and IMAGES_DIR.exists():
-        for f in IMAGES_DIR.glob("segment_*.png"):
-            f.unlink()
+    # ③ 기존 이미지/클립 삭제 (옵션)
+    if clear_images:
+        if IMAGES_DIR.exists():
+            for f in IMAGES_DIR.glob("segment_*.png"):
+                f.unlink()
+        if CLIPS_DIR.exists():
+            for f in CLIPS_DIR.glob("segment_*.mp4"):
+                f.unlink()
 
     # ④ 스텝 상태 표시 영역
     st.markdown("### 🔄 파이프라인 진행 상황")
@@ -366,7 +443,6 @@ if run_btn and script_text.strip():
 
 # ── Results ───────────────────────────────────────────────────────────
 images = sorted(IMAGES_DIR.glob("segment_*.png")) if IMAGES_DIR.exists() else []
-CLIPS_DIR = OUTPUT_DIR / "clips"
 clips = sorted(CLIPS_DIR.glob("segment_*.mp4")) if CLIPS_DIR.exists() else []
 
 if VIDEO_PATH.exists() or images or clips:
