@@ -161,6 +161,57 @@ async def _edge_tts_stream(text: str, voice: str) -> tuple[bytes, list[WordTimes
     return b"".join(audio_chunks), words
 
 
+def _estimate_timing_from_audio(state: PipelineState, audio_bytes: bytes) -> PipelineState:
+    """Fallback when Edge TTS returns no WordBoundary events.
+
+    Estimates total duration from MP3 size (Edge TTS outputs 48 kbps mono),
+    distributes time proportionally by character count, and builds synthetic
+    word-level timestamps so the subtitle generator still works.
+    """
+    # 48 kbps = 6000 bytes/sec
+    total_ms = int(len(audio_bytes) * 1000 / 6000)
+    state.total_audio_duration_ms = total_ms
+
+    total_chars = sum(max(len(seg.text), 1) for seg in state.segments)
+    synthetic_words: list[WordTimestamp] = []
+    current_ms = 0
+
+    for seg in state.segments:
+        seg_ms = int(total_ms * max(len(seg.text), 1) / total_chars)
+        seg.audio_start_ms = current_ms
+        seg.audio_end_ms = current_ms + seg_ms
+        seg.duration_ms = seg_ms
+
+        # Split segment into individual words and distribute time evenly
+        words = seg.text.split()
+        if words:
+            word_ms = seg_ms // len(words)
+            wt_cursor = current_ms
+            for w in words:
+                synthetic_words.append(WordTimestamp(
+                    word=w,
+                    start_ms=wt_cursor,
+                    end_ms=wt_cursor + word_ms,
+                ))
+                wt_cursor += word_ms
+
+        current_ms += seg_ms
+
+    # Clamp last segment and last word to exact total
+    if state.segments:
+        state.segments[-1].audio_end_ms = total_ms
+        state.segments[-1].duration_ms = total_ms - state.segments[-1].audio_start_ms
+    if synthetic_words:
+        synthetic_words[-1].end_ms = total_ms
+
+    state.word_timestamps = synthetic_words
+    logger.warning(
+        f"  WordBoundary 이벤트 없음 — 오디오 크기 기반 타이밍 추정 "
+        f"(총 {total_ms}ms, {len(state.segments)}개 세그먼트)"
+    )
+    return state
+
+
 def _generate_tts_edge(state: PipelineState) -> PipelineState:
     """Generate TTS using Microsoft Edge TTS (free, no API key required)."""
     audio_path = get_audio_path()
@@ -177,9 +228,11 @@ def _generate_tts_edge(state: PipelineState) -> PipelineState:
 
     if word_timestamps:
         state.total_audio_duration_ms = word_timestamps[-1].end_ms
-
-    state.word_timestamps = word_timestamps
-    state = _align_words_to_segments(state, word_timestamps)
+        state.word_timestamps = word_timestamps
+        state = _align_words_to_segments(state, word_timestamps)
+    else:
+        # Korean voices often don't emit WordBoundary events — fall back to proportional estimate
+        state = _estimate_timing_from_audio(state, audio_bytes)
 
     for seg in state.segments:
         logger.info(
