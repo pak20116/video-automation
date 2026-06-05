@@ -71,9 +71,15 @@ def _group_into_lines(word_timestamps: list[WordTimestamp], max_words: int) -> l
 def generate_subtitles(state: PipelineState) -> PipelineState:
     """단어 타임스탬프 기반 ASS 자막 생성 (맑은 고딕, 하단 중앙)."""
     if not state.word_timestamps:
-        logger.warning("word_timestamps가 없습니다. Step 5부터 재실행하세요.")
+        logger.warning("word_timestamps가 없습니다. 자막 없이 진행합니다.")
         subtitle_path = OUTPUT_DIR / "subtitles.ass"
-        subtitle_path.write_text("", encoding="utf-8-sig")
+        # Write a valid (but empty) ASS file so FFmpeg/libass doesn't crash
+        empty_ass = _ASS_HEADER.format(
+            width=VIDEO_WIDTH,
+            height=VIDEO_HEIGHT,
+            fontsize=_read_env_int("SUBTITLE_FONT_SIZE", 24),
+        )
+        subtitle_path.write_text(empty_ass, encoding="utf-8-sig")
         state.subtitle_path = str(subtitle_path)
         return state
 

@@ -51,12 +51,23 @@ def _build_concat_file(state: PipelineState) -> Path:
 
 def _escape_subtitle_path(subtitle_path: str) -> str:
     """Escape subtitle path for FFmpeg subtitles filter on Windows."""
-    # FFmpeg subtitles filter requires colons in Windows drive letters to be escaped
     posix = Path(subtitle_path).as_posix()
     # Escape the drive letter colon: C:/path -> C\:/path
     if len(posix) >= 2 and posix[1] == ":":
         posix = posix[0] + "\\:" + posix[2:]
     return posix
+
+
+def _has_subtitles(subtitle_path: str) -> bool:
+    """Return True only if the subtitle file exists and has actual dialogue content."""
+    path = Path(subtitle_path)
+    if not path.exists():
+        return False
+    try:
+        content = path.read_text(encoding="utf-8-sig", errors="ignore")
+        return "Dialogue:" in content
+    except Exception:
+        return False
 
 
 def _build_ffmpeg_command(
@@ -65,10 +76,13 @@ def _build_ffmpeg_command(
     subtitle_path: str,
     output_path: Path,
 ) -> list[str]:
-    sub_escaped = _escape_subtitle_path(subtitle_path)
-    # fps 필터로 프레임 먼저 확장 후 ass 적용 — concat demuxer는 이미지당 1프레임만 출력하므로
-    # fps= 없이 ass= 만 쓰면 자막이 이미지 전환 시에만 바뀜
-    subtitle_filter = f"fps={VIDEO_FPS},ass='{sub_escaped}'"
+    if _has_subtitles(subtitle_path):
+        sub_escaped = _escape_subtitle_path(subtitle_path)
+        # fps= first so ass filter gets a real frame rate, not one frame per image
+        vf = f"fps={VIDEO_FPS},ass='{sub_escaped}'"
+    else:
+        logger.warning("  자막 파일이 없거나 비어있어 자막 없이 렌더링합니다.")
+        vf = f"fps={VIDEO_FPS}"
 
     return [
         FFMPEG_PATH,
@@ -77,7 +91,7 @@ def _build_ffmpeg_command(
         "-safe", "0",
         "-i", str(concat_path),
         "-i", audio_path,
-        "-vf", subtitle_filter,
+        "-vf", vf,
         "-c:v", "libx264",
         "-preset", "medium",
         "-crf", "23",
@@ -204,12 +218,18 @@ def _add_audio_subtitles(
     output_path: Path,
 ) -> None:
     """Second pass: mux audio and burn subtitles onto the concatenated clip video."""
-    sub_escaped = _escape_subtitle_path(subtitle_path)
+    if _has_subtitles(subtitle_path):
+        sub_escaped = _escape_subtitle_path(subtitle_path)
+        vf_args = ["-vf", f"ass='{sub_escaped}'"]
+    else:
+        logger.warning("  자막 파일이 없거나 비어있어 자막 없이 렌더링합니다.")
+        vf_args = []
+
     cmd = [
         FFMPEG_PATH, "-y",
         "-i", str(video_path),
         "-i", audio_path,
-        "-vf", f"ass='{sub_escaped}'",
+        *vf_args,
         "-c:v", "libx264",
         "-preset", "medium",
         "-crf", "23",
