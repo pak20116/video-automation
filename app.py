@@ -16,6 +16,7 @@ OUTPUT_DIR = PROJECT_ROOT / "output"
 IMAGES_DIR = OUTPUT_DIR / "images"
 AUDIO_PATH = OUTPUT_DIR / "audio" / "full_tts.mp3"
 VIDEO_PATH = OUTPUT_DIR / "final_video.mp4"
+THUMBNAIL_PATH = OUTPUT_DIR / "thumbnail.png"
 
 st.set_page_config(
     page_title="Video Automation Pipeline",
@@ -334,7 +335,7 @@ images = sorted(IMAGES_DIR.glob("segment_*.png")) if IMAGES_DIR.exists() else []
 if VIDEO_PATH.exists() or images:
     st.markdown("### 🎬 결과물")
 
-    tab_img, tab_audio, tab_video = st.tabs(["🖼️ 생성 이미지", "🔊 TTS 음성", "🎬 최종 영상"])
+    tab_img, tab_audio, tab_video, tab_thumb = st.tabs(["🖼️ 생성 이미지", "🔊 TTS 음성", "🎬 최종 영상", "🖼️ 썸네일"])
 
     with tab_img:
         if images:
@@ -365,3 +366,184 @@ if VIDEO_PATH.exists() or images:
                 )
         else:
             st.info("생성된 영상이 없습니다.")
+
+    with tab_thumb:
+        if THUMBNAIL_PATH.exists():
+            st.image(str(THUMBNAIL_PATH), use_container_width=True)
+            with open(THUMBNAIL_PATH, "rb") as f:
+                st.download_button(
+                    "⬇️ 썸네일 다운로드 (PNG)",
+                    f,
+                    file_name="youtube_thumbnail.png",
+                    mime="image/png",
+                    use_container_width=True,
+                    key="dl_thumb_tab",
+                )
+            st.caption("1280×720px · YouTube 표준 썸네일")
+        else:
+            st.info("아래 '유튜브 썸네일 생성기'에서 썸네일을 생성하세요.")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# THUMBNAIL GENERATOR
+# ══════════════════════════════════════════════════════════════════════
+st.divider()
+st.markdown("## 🖼️ 유튜브 썸네일 생성기")
+st.caption("1280×720px · YouTube 표준 — 클릭을 유도하는 썸네일을 영상 스타일에 맞게 자동 생성합니다")
+
+# ── Mode selector ────────────────────────────────────────────────────
+thumb_mode = st.radio(
+    "배경 이미지 방식",
+    ["🎬 영상 장면 사용 (스타일 완벽 일치)", "✨ AI 새 이미지 생성 (동일 스타일 적용)"],
+    horizontal=True,
+    help="영상 장면 사용 시 이미 생성된 이미지를 배경으로 활용해 캐릭터·스타일이 100% 일치합니다",
+)
+use_frame_mode = thumb_mode.startswith("🎬")
+
+thumb_left, thumb_right = st.columns([1, 1], gap="large")
+
+with thumb_left:
+    # ── Frame picker (frame mode only) ──────────────────────────────
+    selected_frame_path = None
+    if use_frame_mode:
+        if images:
+            st.markdown("**🎞️ 배경으로 사용할 장면 선택**")
+            # Mini grid preview
+            preview_cols = st.columns(min(len(images), 5))
+            for i, p in enumerate(images[:5]):
+                preview_cols[i].image(str(p), caption=f"Scene {i+1}", use_container_width=True)
+            if len(images) > 5:
+                with st.expander(f"나머지 {len(images)-5}개 장면 보기"):
+                    extra_cols = st.columns(5)
+                    for i, p in enumerate(images[5:]):
+                        extra_cols[i % 5].image(str(p), caption=f"Scene {i+6}", use_container_width=True)
+
+            selected_scene = st.selectbox(
+                "장면 번호 선택",
+                range(len(images)),
+                format_func=lambda x: f"Scene {x+1}  ({images[x].name})",
+            )
+            selected_frame_path = images[selected_scene]
+        else:
+            st.warning("생성된 영상 이미지가 없습니다. 먼저 영상을 생성하거나 'AI 새 이미지 생성' 모드를 선택하세요.")
+
+    # ── AI mode: topic input ─────────────────────────────────────────
+    if not use_frame_mode:
+        st.markdown("**📌 배경 이미지 주제**")
+        default_topic = script_text.strip()[:500] if script_text.strip() else ""
+        thumb_topic = st.text_area(
+            "주제 설명",
+            value=default_topic,
+            height=90,
+            placeholder="예: 주식 투자 초보자를 위한 배당주 선택 방법\n대본이 입력된 경우 자동으로 채워집니다.",
+            help="Gemini가 영상과 동일한 스타일로 이 주제의 배경 이미지를 생성합니다",
+        )
+    else:
+        thumb_topic = ""
+
+    st.markdown("**✏️ 텍스트**")
+    thumb_title = st.text_input(
+        "제목 텍스트 *",
+        placeholder="예: 주식 배당 완전 정복",
+        help="썸네일에 크게 표시될 텍스트 (3~6단어 권장)",
+    )
+    thumb_subtitle = st.text_input(
+        "부제목 (선택)",
+        placeholder="예: 초보도 월 50만원 버는 법",
+        help="제목 아래 강조 색상으로 표시되는 보조 텍스트",
+    )
+
+    st.markdown("**🎨 디자인**")
+    th_c1, th_c2 = st.columns(2)
+    with th_c1:
+        thumb_accent = st.color_picker(
+            "강조 색상",
+            value="#FFD700",
+            help="부제목과 액센트 바 색상",
+        )
+        thumb_position = st.selectbox(
+            "텍스트 위치",
+            ["bottom", "center", "top"],
+            format_func=lambda x: {"bottom": "하단", "center": "중앙", "top": "상단"}[x],
+        )
+    with th_c2:
+        thumb_opacity = st.slider(
+            "배경 어둡기",
+            min_value=20,
+            max_value=90,
+            value=65,
+            help="텍스트 가독성을 위한 오버레이 강도",
+        )
+
+    _frame_ready = not use_frame_mode or selected_frame_path is not None
+    gen_thumb_btn = st.button(
+        "🎨 썸네일 생성",
+        type="primary",
+        use_container_width=True,
+        disabled=not (thumb_title.strip() and _frame_ready),
+    )
+
+with thumb_right:
+    st.markdown("**👀 미리보기**")
+
+    if gen_thumb_btn and thumb_title.strip():
+        with st.spinner("썸네일 생성 중..."):
+            try:
+                import importlib, sys
+                _mod_key = "pipeline.thumbnail_generator"
+                if _mod_key in sys.modules:
+                    importlib.reload(sys.modules[_mod_key])
+                import pipeline.thumbnail_generator as _thumb
+
+                if use_frame_mode and selected_frame_path:
+                    _thumb.generate_thumbnail_from_frame(
+                        frame_path=selected_frame_path,
+                        title=thumb_title.strip(),
+                        subtitle=thumb_subtitle.strip(),
+                        accent_color=thumb_accent,
+                        text_position=thumb_position,
+                        overlay_opacity=thumb_opacity,
+                        output_path=THUMBNAIL_PATH,
+                    )
+                else:
+                    _thumb.generate_thumbnail(
+                        topic=thumb_topic.strip() or thumb_title,
+                        title=thumb_title.strip(),
+                        subtitle=thumb_subtitle.strip(),
+                        art_style=art_style,
+                        character_desc=character_desc,
+                        accent_color=thumb_accent,
+                        text_position=thumb_position,
+                        overlay_opacity=thumb_opacity,
+                        output_path=THUMBNAIL_PATH,
+                    )
+                st.success("✅ 썸네일 생성 완료!")
+            except Exception as e:
+                st.error(f"❌ 썸네일 생성 실패: {e}")
+
+    if THUMBNAIL_PATH.exists():
+        st.image(str(THUMBNAIL_PATH), use_container_width=True)
+        st.caption("1280×720px · YouTube 표준 썸네일")
+        with open(THUMBNAIL_PATH, "rb") as f:
+            st.download_button(
+                "⬇️ 썸네일 다운로드 (PNG)",
+                data=f,
+                file_name="youtube_thumbnail.png",
+                mime="image/png",
+                use_container_width=True,
+                key="dl_thumb_gen",
+            )
+    else:
+        st.markdown(
+            """
+            <div style="background:#f8f9fa;border-radius:8px;padding:24px;color:#555;font-size:0.9rem;">
+            <b>클릭을 유도하는 썸네일 팁</b><br><br>
+            ✅ 제목은 <b>3~6단어</b>로 짧고 강렬하게<br>
+            ✅ <b>숫자 포함</b>이 효과적 (예: "5가지 방법")<br>
+            ✅ 호기심·감정을 자극하는 문구<br>
+            ✅ 고대비 강조 색상으로 눈길 끌기<br>
+            ✅ 부제목으로 구체적인 혜택 제시
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
